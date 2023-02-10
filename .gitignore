@@ -134,5 +134,7 @@ dmypy.json
 .DS_Store
 tmp*.py
 
-# shell script
-*.sh
+
+# dataset files
+dataset/output_npy
+dataset/*.zip
