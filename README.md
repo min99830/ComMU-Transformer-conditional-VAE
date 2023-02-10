@@ -14,15 +14,15 @@ Forked from [link](https://github.com/POZAlabs/ComMU-code)
 
 All you have to do is just
 
-    ```
-    cd dataset && ./download.sh && cd ..
-    ```
+```
+cd dataset && ./download.sh && cd ..
+```
 
 If you have some problems downloading the dataset, try
 
-    ```
-    chmod u+x ./dataset/download.sh
-    ```
+```
+chmod u+x ./dataset/download.sh
+```
 
 ## Training - this will be implemented
 ```
