@@ -132,9 +132,12 @@ dmypy.json
 .idea
 .vscode
 .DS_Store
-tmp*.py
 
 
 # dataset files
 dataset/output_npy
 dataset/*.zip
+dataset/__MACOSX
+
+# test files
+tmp_train_CPU.py

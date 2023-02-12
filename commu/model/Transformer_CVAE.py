@@ -5,7 +5,6 @@ import math
 from torch import Tensor
 from torch.nn import functional as F
 from torch.nn import Module
-from torch.nn import ModuleList
 from torch.nn.init import xavier_uniform_
 from torch.nn import LayerNorm
 from torch.nn import Linear
@@ -24,7 +23,8 @@ from torch.nn import CrossEntropyLoss
 
 class Transformer_CVAE(Module):
     """
-    Args:
+    arguments are replaced to cfg which is in commu/model/config_helperCVAE
+    Args at cfg:
         d_model: the number of expected features in the encoder/decoder inputs (default=512).
         nhead: the number of heads in the multiheadattention models (default=8).
         num_encoder_layers: the number of sub-encoder-layers in the encoder (default=6).
@@ -42,35 +42,40 @@ class Transformer_CVAE(Module):
             other attention and feedforward operations, otherwise after. Default: ``False`` (after).
     """
 
-    def __init__(self, d_model: int = 512, d_latent: int = 64, nhead: int = 8, num_encoder_layers: int = 6,
-                 num_decoder_layers: int = 6, dim_feedforward: int = 2048, pad_idx: int = 0, vocab_size: int = 729, seq_len: int = 256, cdt_len: int = 11, dropout: float = 0.1,
-                 activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
-                 custom_encoder: Optional[Any] = None, custom_decoder: Optional[Any] = None,
-                 layer_norm_eps: float = 1e-5, batch_first: bool = False, norm_first: bool = False,
-                 device=None, dtype=None) -> None:
+    def __init__(self, cfg, device=None, dtype=None) -> None:
         factory_kwargs = {'device': device, 'dtype': dtype}
         super(Transformer_CVAE, self).__init__()
         torch._C._log_api_usage_once(f"torch.nn.modules.{self.__class__.__name__}")
 
-        if custom_encoder is not None:
-            self.encoder = custom_encoder
-        else:
-            encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout,
-                                                    activation, layer_norm_eps, batch_first, norm_first,
-                                                    **factory_kwargs)
-            encoder_norm = LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
-            self.encoder = TransformerEncoder(encoder_layer, num_encoder_layers, encoder_norm)
+        d_model = cfg.MODEL.units
+        d_latent = cfg.MODEL.latent_dim
+        nhead = cfg.MODEL.num_heads
+        num_encoder_layers = cfg.MODEL.num_layers
+        num_decoder_layers = cfg.MODEL.num_layers
+        dim_feedforward = cfg.MODEL.inner_size
+        pad_idx = cfg.MODEL.pad_index
+        vocab_size = cfg.MODEL.vocab_size
+        seq_len = cfg.TRAIN.tgt_length
+        cdt_len = cfg.MODEL.meta_length
+        dropout = cfg.MODEL.dropout
+        activation = F.relu
+        layer_norm_eps = cfg.MODEL.layer_norm_eps
+        batch_first = False
+        norm_first = False
+
+        encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout,
+                                                activation, layer_norm_eps, batch_first, norm_first,
+                                                **factory_kwargs)
+        encoder_norm = LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
+        self.encoder = TransformerEncoder(encoder_layer, num_encoder_layers, encoder_norm)
 
         self.sample_layer = VAEsample(d_model, d_latent, batch_first, **factory_kwargs)
 
-        if custom_decoder is not None:
-            self.decoder = custom_decoder
-        else:
-            decoder_layer = TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout,
-                                                    activation, layer_norm_eps, batch_first, norm_first,
-                                                    **factory_kwargs)
-            decoder_norm = LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
-            self.decoder = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm)
+        decoder_layer = TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout,
+                                                activation, layer_norm_eps, batch_first, norm_first,
+                                                **factory_kwargs)
+        decoder_norm = LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
+        self.decoder = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm)
 
         self._reset_parameters()
 
@@ -86,7 +91,7 @@ class Transformer_CVAE(Module):
         self.local_decoder = Linear(d_model, vocab_size, **factory_kwargs)
         self.condition_embed = TokenEmbedding(d_latent, vocab_size=vocab_size, **factory_kwargs)
         self.src_tgt_embed = TransformerEmbedding(d_model, vocab_size, seq_len, batch_first=batch_first, **factory_kwargs)
-        self.criterion = VAE_Loss(beta=1, pad_idx=0) # beta = 1 from Transformer VAE paper, pad_idx from ComMU dataset
+        self.criterion = VAE_Loss(beta=1, pad_idx=pad_idx) # beta = 1 from Transformer VAE paper, pad_idx from ComMU dataset
 
     def forward_(self, src: Tensor, tgt: Tensor, cdt: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,
                 memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
@@ -161,8 +166,12 @@ class Transformer_CVAE(Module):
                 memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None, memory_key_padding_mask: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
         
-        src_tgt_mask = self.generate_square_subsequent_mask(self.seq_len, device=self.device)
-        cross_attention_mask = self.generate_rectangle_subsequent_mask(self.seq_len + self.cdt_len, self.seq_len, device=self.device)
+        if self.batch_first:
+            seq_len = src.size(1)
+        else:
+            seq_len = src.size(0)
+        src_tgt_mask = self.generate_square_subsequent_mask(seq_len, device=self.device)
+        cross_attention_mask = self.generate_rectangle_subsequent_mask(seq_len, self.cdt_len, device=self.device)
         
         src_embed = self.src_tgt_embed(src)
         tgt_embed = self.src_tgt_embed(tgt)
@@ -170,7 +179,7 @@ class Transformer_CVAE(Module):
 
         src_embed = self.local_encoder(src_embed)
         tgt_embed = self.local_encoder(tgt_embed)
-        out, latent_mu, latent_std = self.forward_(src_embed, tgt_embed, cdt_embed, src_tgt_mask, src_tgt_mask, memory_mask, src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask)
+        out, latent_mu, latent_std = self.forward_(src_embed, tgt_embed, cdt_embed, src_tgt_mask, src_tgt_mask, cross_attention_mask, src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask)
         pred = F.log_softmax(self.local_decoder(out), dim = 2)
         loss = self.criterion(pred, src, latent_mu, latent_std)
         return (loss, out)
@@ -181,11 +190,11 @@ class Transformer_CVAE(Module):
         r"""Generate a square mask for the sequence. The masked positions are filled with float('-inf').
             Unmasked positions are filled with float(0.0).
         """
-        return torch.triu(torch.full((sz, sz), float('-inf'), device=device), diagonal=1)
+        return torch.triu(torch.full((sz, sz), float('-inf'), device=device), diagonal=0)
     
     @staticmethod
-    def generate_rectangle_subsequent_mask(xsz: int, ysz: int, device='cpu') -> Tensor:
-        return torch.triu(torch.full((xsz, ysz), float('-inf'), device=device), diagonal=1)
+    def generate_rectangle_subsequent_mask(sz: int, cdt: int, device='cpu') -> Tensor:
+        return torch.triu(torch.full((sz, sz + cdt), float('-inf'), device=device), diagonal=cdt)
 
     def _reset_parameters(self):
         r"""Initiate parameters in the transformer model."""
@@ -218,7 +227,7 @@ class VAEsample(Module):
         latent_std = torch.exp(lin_out[:, :, self.d_latent:] / 2)
         norm_sample = torch.normal(mean = 0, std = 1, size=latent_mean.size(), device=self.device)
         out = latent_mean + latent_std * norm_sample
-        out = torch.concat((out, cdt), dim = self.seq_pos)
+        out = torch.concat((cdt, out), dim = self.seq_pos)
         out = self.latent2model(out)
         return out, latent_mean, latent_std
 
