@@ -24,7 +24,7 @@ If you have some problems downloading the dataset, try
 chmod u+x ./dataset/download.sh
 ```
 
-## Training - this will be implemented
+## Training
 ```
 $ python3 -m torch.distributed.launch --nproc_per_node=4 ./trainCVAE.py --data_dir ./dataset/commu_midi/output_npy --work_dir {./working_direcoty}
 ```
