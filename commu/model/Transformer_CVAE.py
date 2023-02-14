@@ -190,11 +190,11 @@ class Transformer_CVAE(Module):
         r"""Generate a square mask for the sequence. The masked positions are filled with float('-inf').
             Unmasked positions are filled with float(0.0).
         """
-        return torch.triu(torch.full((sz, sz), float('-inf'), device=device), diagonal=0)
+        return torch.triu(torch.full((sz, sz), float('-inf'), device=device), diagonal=1)
     
     @staticmethod
     def generate_rectangle_subsequent_mask(sz: int, cdt: int, device='cpu') -> Tensor:
-        return torch.triu(torch.full((sz, sz + cdt), float('-inf'), device=device), diagonal=cdt)
+        return torch.triu(torch.full((sz, sz + cdt), float('-inf'), device=device), diagonal=cdt + 1)
 
     def _reset_parameters(self):
         r"""Initiate parameters in the transformer model."""

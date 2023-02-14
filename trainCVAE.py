@@ -416,7 +416,7 @@ test_iter = dataset.eval_iterator(
 logger.info("Build the model")
 
 assert cfg.MODEL.units % cfg.MODEL.num_heads == 0
-model = Transformer_CVAE(cfg)
+model = Transformer_CVAE(cfg, device = device)
 model.apply(weights_init)
 # model.word_emb.apply(
 #     weights_init
@@ -426,8 +426,6 @@ args.n_all_param = sum([p.nelement() for p in model.parameters()])
 args.n_nonemb_param_gen = sum(
     [p.nelement() for p in model.parameters()]
 )
-
-model = model.to(device)
 
 # MLE optimizer
 local_lr = cfg.TRAIN.lr / num_gpus
@@ -481,12 +479,11 @@ if __name__ == "__main__":
     cfg.defrost()
     cfg.MODEL.same_length = True
     cfg.freeze()
-    model = Transformer_CVAE(cfg)
+    model = Transformer_CVAE(cfg).to(device)
     checkpoint = torch.load(os.path.join(args.work_dir, "checkpoint_best.pt"))
 
     model.load_state_dict(checkpoint["model"])
     # Do the evaluation of the best model
-    model = model.to(device)
 
     test_token_num, test_total_nll = evaluate(
         eval_iter=test_iter
