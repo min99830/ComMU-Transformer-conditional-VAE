@@ -295,7 +295,7 @@ class VAE_Loss(Module):
         self.reconstruction_loss = CrossEntropyLoss(ignore_index=pad_idx)
     
     def forward(self, pred: Tensor, output: Tensor, latent_mu: Tensor, latent_std: Tensor) -> Tensor:
-        kld_loss = - 0.5 * torch.sum(1 + 2 * torch.log(torch.abs(latent_mu)) - latent_mu.pow(2) - latent_std.pow(2))
+        kld_loss = - 0.5 * torch.sum(1 + 2 * torch.log(torch.abs(latent_mu + 1e-6)) - latent_mu.pow(2) - latent_std.pow(2))
         sz = output.size(0) * output.size(1)
         rec_loss = self.reconstruction_loss(pred.contiguous().view(sz, -1), output.contiguous().view(sz))
 

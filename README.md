@@ -26,7 +26,7 @@ chmod u+x ./dataset/download.sh
 
 ## Training
 ```
-$ python3 -m torch.distributed.launch --nproc_per_node=4 ./trainCVAE.py —data_dir ./dataset/output_npy —work_dir ./workdir
+$ python3 -m torch.distributed.launch --nproc_per_node=4 ./trainCVAE.py —-data_dir ./dataset/output_npy —work_dir ./workdir
 ```
 
 ## Generating - this will be implemented
