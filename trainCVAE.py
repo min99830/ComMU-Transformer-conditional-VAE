@@ -93,9 +93,6 @@ def evaluate(eval_iter):
             total_nll += batch_token_num * loss.float().item()
             total_token_num += batch_token_num
 
-    eval_model.reset_length(cfg.TRAIN.tgt_length, cfg.TRAIN.mem_length)
-    eval_model.same_length = cfg.MODEL.same_length
-
     model.train()
 
     return total_token_num, total_nll
