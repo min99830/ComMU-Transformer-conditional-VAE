@@ -26,13 +26,13 @@ chmod u+x ./dataset/download.sh
 
 ## Training
 ```
-$ python3 -m torch.distributed.launch --nproc_per_node=4 ./trainCVAE.py —-data_dir ./dataset/output_npy —work_dir ./workdir
+python3 -m torch.distributed.launch --nproc_per_node=4 ./trainCVAE.py —-data_dir ./dataset/output_npy -—work_dir ./workdir
 ```
 
 ## Generating - this will be implemented
 - generation involves choice of metadata, regarding which type of music(midi file) we intend to generate. the example of command is showed below.
     ```
-    $ python3 generateCVAE.py \
+    python3 generateCVAE.py \
     --checkpoint_dir {./working_directory/checkpoint_best.pt} \
     --output_dir {./output_dir} \
     --bpm 70 \
