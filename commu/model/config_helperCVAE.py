@@ -80,7 +80,9 @@ def get_default_cfg_inference():
     # Model related parameters
     cfg.GENERATION = CN()
     cfg.GENERATION.generation_length = 4096
-
+    cfg.GENERATION.seq_length = 128
+    cfg.GENERATION.latent_dim = 50
+    cfg.GENERATION.pad_index = 0
 
     cfg.freeze()
     return cfg

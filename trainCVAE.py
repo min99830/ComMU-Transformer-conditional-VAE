@@ -88,7 +88,7 @@ def evaluate(eval_iter):
 
         for i, (data, target, meta, batch_token_num) in enumerate(eval_iter()):
 
-            ret = model(data, target, meta)
+            ret = model(target, data, meta)
             loss, out = ret
             total_nll += batch_token_num * loss.float().item()
             total_token_num += batch_token_num
@@ -128,7 +128,7 @@ def train():
             target = target_chunks[i].contiguous()
             meta = meta_chunks[i].contiguous()
 
-            loss, out = model(data, target, meta)
+            loss, out = model(target, data, meta)
 
             # loss = loss[target != dataset.vocab.pad_id] # We already excluded padding in model criterion
             loss = loss.float().mean() / cfg.TRAIN.batch_chunk
@@ -476,7 +476,7 @@ if __name__ == "__main__":
     cfg.defrost()
     cfg.MODEL.same_length = True
     cfg.freeze()
-    model = Transformer_CVAE(cfg).to(device)
+    model = Transformer_CVAE(cfg, device=device).to(device)
     checkpoint = torch.load(os.path.join(args.work_dir, "checkpoint_best.pt"))
 
     model.load_state_dict(checkpoint["model"])

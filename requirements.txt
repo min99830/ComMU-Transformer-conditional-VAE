@@ -24,7 +24,7 @@ scipy==1.8.1
 six==1.16.0
 --find-links https://download.pytorch.org/whl/torch_stable.html
 torch==1.13.1
-torchvision==0.8.2
+torchvision==0.14.1
 typing-extensions==4.2.0
 urllib3==1.26.9
 yacs==0.1.8

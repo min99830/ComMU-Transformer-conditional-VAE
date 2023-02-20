@@ -183,6 +183,31 @@ class Transformer_CVAE(Module):
         pred = F.log_softmax(self.local_decoder(out), dim = 2)
         loss = self.criterion(pred, src, latent_mu, latent_std)
         return (loss, out)
+    
+    # tgt : word sequence that starts with start token, filled with padding at the first step of generation
+    def forward_generate(self, input: Tensor, latent: Tensor, cdt: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,
+                memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
+                tgt_key_padding_mask: Optional[Tensor] = None, memory_key_padding_mask: Optional[Tensor] = None) -> Tensor:
+        
+        if self.batch_first:
+            seq_len = input.size(1)
+        else:
+            seq_len = input.size(0)
+        src_tgt_mask = self.generate_square_subsequent_mask(seq_len, device=self.device)
+        cross_attention_mask = self.generate_rectangle_subsequent_mask(seq_len, self.cdt_len, device=self.device)
+
+        input_embed = self.src_tgt_embed(input)
+        cdt_embed = self.condition_embed(cdt)
+
+        input_embed = self.local_encoder(input_embed)
+        out = torch.concat((cdt_embed, latent), dim = 1 if self.batch_first else 0)
+        out = self.sample_layer.latent2model(out)
+        output = self.decoder(input_embed, out, tgt_mask=src_tgt_mask, memory_mask=cross_attention_mask,
+                              tgt_key_padding_mask=tgt_key_padding_mask,
+                              memory_key_padding_mask=memory_key_padding_mask)
+
+        return output
+
 
 
     @staticmethod
@@ -295,7 +320,7 @@ class VAE_Loss(Module):
         self.reconstruction_loss = CrossEntropyLoss(ignore_index=pad_idx)
     
     def forward(self, pred: Tensor, output: Tensor, latent_mu: Tensor, latent_std: Tensor) -> Tensor:
-        kld_loss = - 0.5 * torch.sum(1 + 2 * torch.log(torch.abs(latent_mu + 1e-6)) - latent_mu.pow(2) - latent_std.pow(2))
+        kld_loss = - 0.5 * torch.sum(1 + 2 * torch.log(torch.abs(latent_std) + 1e-22) - latent_mu.pow(2) - latent_std.pow(2))
         sz = output.size(0) * output.size(1)
         rec_loss = self.reconstruction_loss(pred.contiguous().view(sz, -1), output.contiguous().view(sz))
 
