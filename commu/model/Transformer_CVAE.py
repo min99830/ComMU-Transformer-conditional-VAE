@@ -154,11 +154,11 @@ class Transformer_CVAE(Module):
             raise RuntimeError("the feature number of src and tgt must be equal to d_model")
 
         encoder_out = self.encoder(src, mask=src_mask, src_key_padding_mask=src_key_padding_mask)
-        latent_sample, latent_mu, latent_std = self.sample_layer(encoder_out, cdt)
+        latent_sample, latent_mu, latent_logvar = self.sample_layer(encoder_out, cdt)
         output = self.decoder(tgt, latent_sample, tgt_mask=tgt_mask, memory_mask=memory_mask,
                               tgt_key_padding_mask=tgt_key_padding_mask,
                               memory_key_padding_mask=memory_key_padding_mask)
-        return (output, latent_mu, latent_std)
+        return (output, latent_mu, latent_logvar)
     
     # src : word sequence
     # tgt : word sequence that starts with start token
@@ -180,9 +180,9 @@ class Transformer_CVAE(Module):
 
         src_embed = self.local_encoder(src_embed)
         tgt_embed = self.local_encoder(tgt_embed)
-        out, latent_mu, latent_std = self.forward_(src_embed, tgt_embed, cdt_embed, src_tgt_mask, src_tgt_mask, cross_attention_mask, src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask)
+        out, latent_mu, latent_logvar = self.forward_(src_embed, tgt_embed, cdt_embed, src_tgt_mask, src_tgt_mask, cross_attention_mask, src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask)
         pred = F.log_softmax(self.local_decoder(out), dim = 2)
-        loss, nll = self.criterion(pred, src, latent_mu, latent_std)
+        loss, nll = self.criterion(pred, src, latent_mu, latent_logvar)
         return (loss, nll, out)
     
     # tgt : word sequence that starts with start token, filled with padding at the first step of generation
@@ -250,12 +250,13 @@ class VAEsample(Module):
     def forward(self, x, cdt):
         lin_out = self.model2sample(x)
         latent_mean = lin_out[:, :, :self.d_latent]
-        latent_std = torch.exp(lin_out[:, :, self.d_latent:] / 2)
+        latent_logvar = lin_out[:, :, self.d_latent:]
+        latent_std = torch.exp(0.5*latent_logvar)
         norm_sample = torch.normal(mean = 0, std = 1, size=latent_mean.size(), device=self.device)
         out = latent_mean + latent_std * norm_sample
         out = torch.concat((cdt, out), dim = self.seq_pos)
         out = self.latent2model(out)
-        return out, latent_mean, latent_std
+        return out, latent_mean, latent_logvar
 
 
 class TokenEmbedding(Module):
@@ -318,12 +319,12 @@ class VAE_Loss(Module):
     def __init__(self, beta: int, pad_idx: int) -> None:
         super(VAE_Loss, self).__init__()
         self.beta = beta
-        self.reconstruction_loss = CrossEntropyLoss(ignore_index=pad_idx)
+        self.reconstruction_loss = CrossEntropyLoss(ignore_index=pad_idx, reduction='mean')
     
-    def forward(self, pred: Tensor, output: Tensor, latent_mu: Tensor, latent_std: Tensor) -> Tensor:
-        kld_loss = - 0.5 * torch.sum(1 + 2 * torch.log(torch.abs(latent_std) + 1e-22) - latent_mu.pow(2) - latent_std.pow(2))
+    def forward(self, pred: Tensor, output: Tensor, latent_mu: Tensor, latent_logvar: Tensor) -> Tensor:
+        kld_loss = - 0.5 * torch.mean(1 + latent_logvar - latent_mu.pow(2) - latent_logvar.exp())
         sz = output.size(0) * output.size(1)
         rec_loss = self.reconstruction_loss(pred.contiguous().view(sz, -1), output.contiguous().view(sz))
 
-        return kld_loss / sz * self.beta + rec_loss, rec_loss
+        return kld_loss * self.beta + rec_loss, rec_loss
 

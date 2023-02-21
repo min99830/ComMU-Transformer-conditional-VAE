@@ -89,8 +89,8 @@ def evaluate(eval_iter):
         for i, (data, target, meta, batch_token_num) in enumerate(eval_iter()):
 
             ret = model(target, data, meta)
-            loss, out = ret
-            total_nll += batch_token_num * loss.float().item()
+            loss, nll, out = ret
+            total_nll += batch_token_num * nll.float().item()
             total_token_num += batch_token_num
 
     model.train()
@@ -103,6 +103,7 @@ def train():
     global best_val_nll
 
     log_train_loss = torch.tensor(0.0).float().to(device)
+    log_train_nll = torch.tensor(0.0).float().to(device)
     log_grad_norm = torch.tensor(0.0).float().to(device)
     log_token_num = torch.tensor(0).to(device)
 
@@ -138,6 +139,7 @@ def train():
                     * cfg.TRAIN.batch_chunk
             )
             loss.backward()
+            nll = nll.float().mean() / cfg.TRAIN.batch_chunk
             log_train_nll += (
                     nll.item()
                     * (target != dataset.vocab.pad_id).sum()
@@ -159,17 +161,19 @@ def train():
         scheduler.step()
 
         if train_step % cfg.TRAIN.log_interval == 0:
+            torch.distributed.all_reduce(log_train_nll)
             torch.distributed.all_reduce(log_train_loss)
             torch.distributed.all_reduce(log_grad_norm)
             torch.distributed.all_reduce(log_token_num)
 
             log_train_loss /= log_token_num
+            log_train_nll /= log_token_num
             log_grad_norm /= cfg.TRAIN.log_interval * num_gpus
             if args.local_rank == 0:
                 elapsed = time.time() - log_start_time
                 logger.info(
                     "Train Step {}/{}, lr={:f}, tokens/s={:.1f},"
-                    " nll={:.4f}, nnl={:.6f}, ppl={:.2f}, grad norm={}, ".format(
+                    " loss={:.4f}, nll={:.6f}, ppl={:.2f}, grad norm={}, ".format(
                         train_step,
                         cfg.TRAIN.max_step,
                         optimizer.param_groups[0]["lr"],
@@ -181,6 +185,7 @@ def train():
                     )
                 )
 
+            log_train_nll[()] = 0
             log_train_loss[()] = 0
             log_grad_norm[()] = 0
             log_token_num[()] = 0
