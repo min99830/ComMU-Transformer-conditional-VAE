@@ -350,6 +350,7 @@ class InferenceTask:
                 meta = torch.LongTensor(encoded_meta).view(-1, 1).to(self.device)
                 seq = [self.inference_cfg.GENERATION.pad_index] # 0 is pad_idx
                 seq = self.generate_sequence(seq_tensor, latent, meta)
+                seq = [0] + meta + seq[-1:]
                 if seq is None:
                     continue
                 if not self.validate_generated_sequence(seq):
