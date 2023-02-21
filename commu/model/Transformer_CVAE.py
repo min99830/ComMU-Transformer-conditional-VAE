@@ -60,6 +60,7 @@ class Transformer_CVAE(Module):
         dropout = cfg.MODEL.dropout
         activation = F.relu
         layer_norm_eps = cfg.MODEL.layer_norm_eps
+        beta = cfg.MODEL.beta
         batch_first = False
         norm_first = False
 
@@ -91,7 +92,7 @@ class Transformer_CVAE(Module):
         self.local_decoder = Linear(d_model, vocab_size, **factory_kwargs)
         self.condition_embed = TokenEmbedding(d_latent, vocab_size=vocab_size, **factory_kwargs)
         self.src_tgt_embed = TransformerEmbedding(d_model, vocab_size, seq_len, batch_first=batch_first, **factory_kwargs)
-        self.criterion = VAE_Loss(beta=1, pad_idx=pad_idx) # beta = 1 from Transformer VAE paper, pad_idx from ComMU dataset
+        self.criterion = VAE_Loss(beta=beta, pad_idx=pad_idx) # beta = 1 from Transformer VAE paper, pad_idx from ComMU dataset
 
     def forward_(self, src: Tensor, tgt: Tensor, cdt: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,
                 memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
@@ -181,8 +182,8 @@ class Transformer_CVAE(Module):
         tgt_embed = self.local_encoder(tgt_embed)
         out, latent_mu, latent_std = self.forward_(src_embed, tgt_embed, cdt_embed, src_tgt_mask, src_tgt_mask, cross_attention_mask, src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask)
         pred = F.log_softmax(self.local_decoder(out), dim = 2)
-        loss = self.criterion(pred, src, latent_mu, latent_std)
-        return (loss, out)
+        loss, nll = self.criterion(pred, src, latent_mu, latent_std)
+        return (loss, nll, out)
     
     # tgt : word sequence that starts with start token, filled with padding at the first step of generation
     def forward_generate(self, input: Tensor, latent: Tensor, cdt: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,
@@ -324,5 +325,5 @@ class VAE_Loss(Module):
         sz = output.size(0) * output.size(1)
         rec_loss = self.reconstruction_loss(pred.contiguous().view(sz, -1), output.contiguous().view(sz))
 
-        return kld_loss / sz * self.beta + rec_loss
+        return kld_loss / sz * self.beta + rec_loss, rec_loss
 

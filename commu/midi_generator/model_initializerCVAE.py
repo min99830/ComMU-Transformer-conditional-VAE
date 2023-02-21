@@ -45,7 +45,6 @@ class ModelInitializeTask:
         checkpoint = torch.load(model_fp)
         model.load_state_dict(checkpoint["model"], strict=False)
         model.eval()
-        model.reset_length(1, self.inference_cfg.MODEL.memory_length)
         return model
 
     def execute(self):

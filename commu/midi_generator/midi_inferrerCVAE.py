@@ -8,7 +8,7 @@ import yacs.config
 
 from logger import logger
 from commu.midi_generator.container import TransXlInputData
-from commu.model.Transformer_CVAE import TransformerCVAE
+from commu.model.Transformer_CVAE import Transformer_CVAE
 from commu.preprocessor.encoder import TOKEN_OFFSET
 from commu.preprocessor.utils.constants import DEFAULT_POSITION_RESOLUTION
 
@@ -175,7 +175,7 @@ class InferenceTask:
 
     def __call__(
         self,
-        model: TransformerCVAE,
+        model: Transformer_CVAE,
         input_data: TransXlInputData,
         inference_cfg: yacs.config.CfgNode,
     ):
@@ -192,18 +192,19 @@ class InferenceTask:
 
     def update_seq_tensor(self, seq, seq_tensor):
         seq_length = self.inference_cfg.GENERATION.seq_length
-        cur_pos = len(seq)
-        if cur_pos > seq_length:
-            seq_tensor[:-1, 1] = seq_tensor[1:, 1]
+        cur_pos = len(seq) - 1
+        if cur_pos >= seq_length:
+            tmp = seq_tensor[1:, 0].clone()
+            seq_tensor[:-1, 0] = tmp
             cur_pos = -1
-        seq_tensor[cur_pos, 1] = seq[-1]
+        seq_tensor[cur_pos, 0] = seq[-1]
         return seq_tensor, cur_pos
 
     def calc_logits(
         self, seq, seq_tensor: torch.Tensor, latent: torch.Tensor, meta: torch.Tensor
     ) -> torch.Tensor:
         seq_tensor, cur_pos = self.update_seq_tensor(seq, seq_tensor)
-        logits = self.model.forward_generate(seq_tensor, latent, meta)[cur_pos, 1]
+        logits = self.model.forward_generate(seq_tensor, latent, meta)[cur_pos, 0]
         
         return logits
 
@@ -241,7 +242,7 @@ class InferenceTask:
         logits = None
         teacher = TeacherForceTask(self.input_data)
         first_loop = True
-        seq = [0]
+        seq = [self.inference_cfg.GENERATION.pad_index, TOKEN_OFFSET.BAR.value]
         for _ in range(self.inference_cfg.GENERATION.generation_length):
             if seq[-1] == 1:
                 break
@@ -345,7 +346,7 @@ class InferenceTask:
             with torch.no_grad():
                 logger.info("Generating the idx: " + str(idx + 1))
                 latent, seq_tensor = self.generate_latent_init_seq()
-                meta = torch.LongTensor(encoded_meta).to(self.device)
+                meta = torch.LongTensor(encoded_meta).view(-1, 1).to(self.device)
                 seq = [self.inference_cfg.GENERATION.pad_index] # 0 is pad_idx
                 seq = self.generate_sequence(seq_tensor, latent, meta)
                 if seq is None:

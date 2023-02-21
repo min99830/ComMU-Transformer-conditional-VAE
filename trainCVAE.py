@@ -128,7 +128,7 @@ def train():
             target = target_chunks[i].contiguous()
             meta = meta_chunks[i].contiguous()
 
-            loss, out = model(target, data, meta)
+            loss, nll, out = model(target, data, meta)
 
             # loss = loss[target != dataset.vocab.pad_id] # We already excluded padding in model criterion
             loss = loss.float().mean() / cfg.TRAIN.batch_chunk
@@ -138,6 +138,11 @@ def train():
                     * cfg.TRAIN.batch_chunk
             )
             loss.backward()
+            log_train_nll += (
+                    nll.item()
+                    * (target != dataset.vocab.pad_id).sum()
+                    * cfg.TRAIN.batch_chunk
+            )
 
         log_token_num += int(batch_token_num)
 
@@ -164,13 +169,14 @@ def train():
                 elapsed = time.time() - log_start_time
                 logger.info(
                     "Train Step {}/{}, lr={:f}, tokens/s={:.1f},"
-                    " nll={:.4f}, ppl={:.2f}, grad norm={}, ".format(
+                    " nll={:.4f}, nnl={:.6f}, ppl={:.2f}, grad norm={}, ".format(
                         train_step,
                         cfg.TRAIN.max_step,
                         optimizer.param_groups[0]["lr"],
                         log_token_num.item() / elapsed,
                         log_train_loss.item(),
-                        math.exp(log_train_loss.item()),
+                        log_train_nll.item(),
+                        math.exp(log_train_nll.item()),
                         log_grad_norm.item(),
                     )
                 )

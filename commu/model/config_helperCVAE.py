@@ -8,12 +8,13 @@ def model(cfg):
     cfg.MODEL.num_heads = 10
     cfg.MODEL.units = 500
     cfg.MODEL.inner_size = 1000
-    cfg.MODEL.latent_dim = 50
+    cfg.MODEL.latent_dim = 16
     cfg.MODEL.dropout = 0.1
     cfg.MODEL.attention_dropout = 0.1 # Do not use this
     cfg.MODEL.layer_norm_eps = 1e-5
     cfg.MODEL.clamp_len = -1
 
+    cfg.MODEL.beta = 250
     cfg.MODEL.pad_index = 0
     cfg.MODEL.vocab_size = 729
     cfg.MODEL.meta_length = 11
@@ -29,13 +30,13 @@ def train(cfg):
     cfg.TRAIN.tgt_length = 128
     cfg.TRAIN.mem_length = 1024
     cfg.TRAIN.seed = 1111
-    cfg.TRAIN.lr = 0.004
-    cfg.TRAIN.lr_min = 0.0001
+    cfg.TRAIN.lr = 0.0004
+    cfg.TRAIN.lr_min = 0.00001
     cfg.TRAIN.warmup_step = 100
     cfg.TRAIN.clip = 1.0
     cfg.TRAIN.max_step = 20000
     cfg.TRAIN.log_interval = 100
-    cfg.TRAIN.eval_interval = 1000
+    cfg.TRAIN.eval_interval = 500
     cfg.TRAIN.weight_decay = 0.0
     return cfg
 
@@ -81,7 +82,7 @@ def get_default_cfg_inference():
     cfg.GENERATION = CN()
     cfg.GENERATION.generation_length = 4096
     cfg.GENERATION.seq_length = 128
-    cfg.GENERATION.latent_dim = 50
+    cfg.GENERATION.latent_dim = 16
     cfg.GENERATION.pad_index = 0
 
     cfg.freeze()
