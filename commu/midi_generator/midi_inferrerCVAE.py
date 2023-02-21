@@ -217,7 +217,8 @@ class InferenceTask:
             # Apply temperature spec
             logits /= self.input_data.temperature
             # Compute softmax
-            probs = F.softmax(logits, dim=-1)
+            # Use Gumbel Softmax Trick
+            probs = F.softmax(logits / self.inference_cfg.GENERATION.tau, dim=-1)
 
         probs = F.pad(probs, [1, 0])
         return probs
