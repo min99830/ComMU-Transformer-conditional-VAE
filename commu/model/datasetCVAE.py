@@ -201,31 +201,49 @@ class ComMUDatasetCVAE:
         total_sample_num = len(split_data)
 
         def iterator():
+            perm = np.arange(total_sample_num)
+            assert batch_size < total_sample_num
+            tracker_list = [(i, meta_len) for i in range(batch_size)]
+            next_idx = batch_size
             data = torch.LongTensor(bptt, batch_size)
             target = torch.LongTensor(bptt, batch_size)
             meta = torch.LongTensor(meta_len, batch_size)
-            for batch_begin in range(0, total_sample_num, batch_size):
-                batch_end = min(batch_begin + batch_size, total_sample_num)
-                max_seq_length = max(split_seq_lengths[batch_begin:batch_end])
-                for seq_begin in range(meta_len, max_seq_length - 1, bptt):
-                    data[:] = self.vocab.pad_id
-                    target[:] = self.vocab.pad_id
-                    batch_token_num = 0
-                    for i in range(batch_begin, batch_end):
-                        if split_seq_lengths[i] > seq_begin + 1:
-                            n_new = (
-                                    min(seq_begin + bptt, split_seq_lengths[i] - 1)
-                                    - seq_begin
-                            )
-                            data[:n_new, i - batch_begin] = split_data[i][
-                                                            seq_begin: seq_begin + n_new
-                                                            ]
-                            target[:n_new, i - batch_begin] = split_data[i][
-                                                              (seq_begin + 1): (seq_begin + n_new + 1)
-                                                              ]
-                            batch_token_num += n_new
-                            meta[:, i - batch_begin] = split_data[i][:meta_len]
 
-                    yield data.to(device), target.to(device), meta.to(device), batch_token_num
+            while True:
+                # Generate the samples
+                # Fill with pad_id
+                data[:] = self.vocab.pad_id
+                target[:] = self.vocab.pad_id
+                batch_token_num = 0
+                for i in range(batch_size):
+                    idx, pos = tracker_list[i]
+                    while idx < total_sample_num:
+                        seq_id = perm[idx]
+                        seq_length = split_seq_lengths[seq_id]
+                        if pos + 1 >= seq_length:
+                            idx, pos = next_idx, 0
+                            tracker_list[i] = (idx, pos)
+                            next_idx += 1
+                            continue
+                        else:
+                            n_new = min(seq_length - pos, bptt)
+                            # add start token here!
+                            data[1:n_new, i] = split_data[seq_id][pos: pos + n_new - 1]
+                            target[:n_new, i] = split_data[seq_id][
+                                                (pos): (pos + n_new)]
+                            batch_token_num += n_new
+                            # find next position here
+                            # next data starts from the last bar appeared in current data
+                            bar_idx = (target[:, i] == self._bar_id).nonzero().max().item()
+                            tracker_list[i] = (idx, pos + bar_idx)
+                            meta[:meta_len, i] = split_data[seq_id][:meta_len]
+                            break
+                if batch_token_num == 0:
+                    # Haven't found anything to fill. This indicates we have reached the end
+                    tracker_list = [(i, 0) for i in range(batch_size)]
+                    next_idx = batch_size
+                    continue
+
+                yield data.to(device), target.to(device), meta.to(device), batch_token_num
 
         return iterator
