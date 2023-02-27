@@ -15,11 +15,198 @@ from torch.nn import TransformerDecoder
 from torch.nn import Embedding
 from torch.nn import CrossEntropyLoss
 
-
 # This model is from torch github https://github.com/pytorch/pytorch/blob/master/torch/nn/modules/transformer.py
 # I just edited some parts to use it as transformer_VAE
 # Transformer VAE paper : https://ieeexplore.ieee.org/document/9054554
 # notion : https://www.notion.so/binne/YAI-X-POZAlabs-852ef538af984d99abee33037751547c
+
+class RelativeEncoderLayer(TransformerEncoderLayer):
+
+    def __init__(self, d_model: int, nhead: int, num_buckets: int, dim_feedforward: int = 2048, dropout: float = 0.1,
+                 activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
+                 layer_norm_eps: float = 1e-5, batch_first: bool = False, norm_first: bool = False,
+                 device=None, dtype=None) -> None:
+        
+        # Inheritance
+        kwargs = {'d_model': d_model, 'nhead': nhead, 'dim_feedforward': dim_feedforward, 'dropout': dropout,
+                  'activation': activation, 'layer_norm_eps': layer_norm_eps, 'batch_first': batch_first,
+                  'norm_first': norm_first, 'device': device, 'dtype': dtype}
+        super(RelativeEncoderLayer, self).__init__(**kwargs)
+
+        factory_kwargs = {'device': device, 'dtype': dtype}
+
+        # Modification
+        self.device = device
+        self.relative_attention_num_buckets = num_buckets
+        self.relative_attention_bias_sa = Embedding(self.relative_attention_num_buckets, nhead, **factory_kwargs)
+
+    def compute_bias(self, bsz, query_length, key_length, relative_attention_bias):
+        """Compute binned relative position bias"""
+        context_position = torch.arange(
+            query_length, dtype=torch.long, device=self.device
+        )[:, None]
+        memory_position = torch.arange(
+            key_length, dtype=torch.long, device=self.device
+        )[None, :]
+        relative_position = memory_position - context_position  # shape (query_length, key_length)
+        relative_position_bucket = self._relative_position_bucket(
+            relative_position,  # shape (query_length, key_length)
+            num_buckets=self.relative_attention_num_buckets,
+        )
+        values = relative_attention_bias(relative_position_bucket)  # shape (query_length, key_length, num_heads)
+        values = values.permute([2, 0, 1]).repeat(bsz, 1, 1)  # shape (bsz, num_heads, query_length, key_length)
+        return values
+
+    def _sa_block(self, x: Tensor, attn_mask: Optional[Tensor], key_padding_mask: Optional[Tensor]) -> Tensor:
+        mask_bias = attn_mask + self.compute_bias(x.size(1), x.size(0), x.size(0), self.relative_attention_bias_sa)
+        x = self.self_attn(x, x, x,
+                           attn_mask=mask_bias,
+                           key_padding_mask=key_padding_mask,
+                           need_weights=False)[0]
+        return self.dropout1(x)
+
+    def _relative_position_bucket(self, relative_position, bidirectional=True, num_buckets=32, max_distance=128):
+        """
+        Adapted from Mesh Tensorflow:
+        https://github.com/tensorflow/mesh/blob/0cb87fe07da627bf0b7e60475d59f95ed6b5be3d/mesh_tensorflow/transformer/transformer_layers.py#L593
+        Translate relative position to a bucket number for relative attention. The relative position is defined as
+        memory_position - query_position, i.e. the distance in tokens from the attending position to the attended-to
+        position. If bidirectional=False, then positive relative positions are invalid. We use smaller buckets for
+        small absolute relative_position and larger buckets for larger absolute relative_positions. All relative
+        positions >=max_distance map to the same bucket. All relative positions <=-max_distance map to the same bucket.
+        This should allow for more graceful generalization to longer sequences than the model has been trained on
+        Args:
+            relative_position: an int32 Tensor
+            bidirectional: a boolean - whether the attention is bidirectional
+            num_buckets: an integer
+            max_distance: an integer
+        Returns:
+            a Tensor with the same shape as relative_position, containing int32 values in the range [0, num_buckets)
+        """
+        relative_buckets = 0
+        if bidirectional:
+            num_buckets //= 2
+            relative_buckets += (relative_position > 0).to(torch.long) * num_buckets
+            relative_position = torch.abs(relative_position)
+        else:
+            relative_position = -torch.min(relative_position, torch.zeros_like(relative_position))
+        # now relative_position is in the range [0, inf)
+
+        # half of the buckets are for exact increments in positions
+        max_exact = num_buckets // 2
+        is_small = relative_position < max_exact
+
+        # The other half of the buckets are for logarithmically bigger bins in positions up to max_distance
+        relative_postion_if_large = max_exact + (
+            torch.log(relative_position.float() / max_exact)
+            / math.log(max_distance / max_exact)
+            * (num_buckets - max_exact)
+        ).to(torch.long)
+        relative_postion_if_large = torch.min(
+            relative_postion_if_large, torch.full_like(relative_postion_if_large, num_buckets - 1)
+        )
+
+        relative_buckets += torch.where(is_small, relative_position, relative_postion_if_large)
+        return relative_buckets
+
+
+class RelativeDecoderLayer(TransformerDecoderLayer):
+    def __init__(self, d_model: int, nhead: int, num_buckets: int, dim_feedforward: int = 2048, dropout: float = 0.1,
+                 activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
+                 layer_norm_eps: float = 0.00001, batch_first: bool = False, norm_first: bool = False,
+                 device=None, dtype=None) -> None:
+        
+        # Inheritance
+        kwargs = {'d_model': d_model, 'nhead': nhead, 'dim_feedforward': dim_feedforward, 'dropout': dropout,
+                  'activation': activation, 'layer_norm_eps': layer_norm_eps, 'batch_first': batch_first,
+                  'norm_first': norm_first, 'device': device, 'dtype': dtype}
+        super(RelativeDecoderLayer, self).__init__(**kwargs)
+
+        factory_kwargs = {'device': device, 'dtype': dtype}
+
+        # Modification
+        self.device = device
+        self.relative_attention_num_buckets = num_buckets
+        self.relative_attention_bias_sa = Embedding(self.relative_attention_num_buckets, nhead, **factory_kwargs)
+        self.relative_attention_bias_mha = Embedding(self.relative_attention_num_buckets, nhead, **factory_kwargs)
+
+    def _sa_block(self, x: Tensor, attn_mask: Optional[Tensor], key_padding_mask: Optional[Tensor]) -> Tensor:
+        mask_bias = attn_mask + self.compute_bias(x.size(1), x.size(0), x.size(0), self.relative_attention_bias_sa)
+        x = self.self_attn(x, x, x,
+                           attn_mask=mask_bias,
+                           key_padding_mask=key_padding_mask,
+                           need_weights=False)[0]
+        return self.dropout1(x)
+    
+    def _mha_block(self, x: Tensor, mem: Tensor, attn_mask: Optional[Tensor], key_padding_mask: Optional[Tensor]) -> Tensor:
+        mask_bias = attn_mask + self.compute_bias(x.size(1), x.size(0), mem.size(0), self.relative_attention_bias_mha)
+        x = self.multihead_attn(x, mem, mem,
+                                attn_mask=mask_bias,
+                                key_padding_mask=key_padding_mask,
+                                need_weights=False)[0]
+        return self.dropout2(x)
+    
+    def _relative_position_bucket(self, relative_position, bidirectional=False, num_buckets=32, max_distance=128):
+        """
+        Adapted from Mesh Tensorflow:
+        https://github.com/tensorflow/mesh/blob/0cb87fe07da627bf0b7e60475d59f95ed6b5be3d/mesh_tensorflow/transformer/transformer_layers.py#L593
+        Translate relative position to a bucket number for relative attention. The relative position is defined as
+        memory_position - query_position, i.e. the distance in tokens from the attending position to the attended-to
+        position. If bidirectional=False, then positive relative positions are invalid. We use smaller buckets for
+        small absolute relative_position and larger buckets for larger absolute relative_positions. All relative
+        positions >=max_distance map to the same bucket. All relative positions <=-max_distance map to the same bucket.
+        This should allow for more graceful generalization to longer sequences than the model has been trained on
+        Args:
+            relative_position: an int32 Tensor
+            bidirectional: a boolean - whether the attention is bidirectional
+            num_buckets: an integer
+            max_distance: an integer
+        Returns:
+            a Tensor with the same shape as relative_position, containing int32 values in the range [0, num_buckets)
+        """
+        relative_buckets = 0
+        if bidirectional:
+            num_buckets //= 2
+            relative_buckets += (relative_position > 0).to(torch.long) * num_buckets
+            relative_position = torch.abs(relative_position)
+        else:
+            relative_position = -torch.min(relative_position, torch.zeros_like(relative_position))
+        # now relative_position is in the range [0, inf)
+
+        # half of the buckets are for exact increments in positions
+        max_exact = num_buckets // 2
+        is_small = relative_position < max_exact
+
+        # The other half of the buckets are for logarithmically bigger bins in positions up to max_distance
+        relative_postion_if_large = max_exact + (
+            torch.log(relative_position.float() / max_exact)
+            / math.log(max_distance / max_exact)
+            * (num_buckets - max_exact)
+        ).to(torch.long)
+        relative_postion_if_large = torch.min(
+            relative_postion_if_large, torch.full_like(relative_postion_if_large, num_buckets - 1)
+        )
+
+        relative_buckets += torch.where(is_small, relative_position, relative_postion_if_large)
+        return relative_buckets
+    
+    def compute_bias(self, bsz, query_length, key_length, relative_attention_bias):
+        """Compute binned relative position bias"""
+        context_position = torch.arange(
+            query_length, dtype=torch.long, device=self.device
+        )[:, None]
+        memory_position = torch.arange(
+            key_length, dtype=torch.long, device=self.device
+        )[None, :]
+        relative_position = memory_position - context_position  # shape (query_length, key_length)
+        relative_position_bucket = self._relative_position_bucket(
+            relative_position=relative_position,  # shape (query_length, key_length)
+            num_buckets=self.relative_attention_num_buckets,
+        )
+        values = relative_attention_bias(relative_position_bucket)  # shape (query_length, key_length, num_heads)
+        values = values.permute([2, 0, 1]).repeat(bsz, 1, 1)  # shape (bsz, num_heads, query_length, key_length)
+        return values
+        
 
 class Transformer_CVAE(Module):
     """
@@ -63,8 +250,9 @@ class Transformer_CVAE(Module):
         beta = cfg.MODEL.beta
         batch_first = False
         norm_first = False
+        num_buckets = cfg.MODEL.num_buckets
 
-        encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout,
+        encoder_layer = RelativeEncoderLayer(d_model, nhead, num_buckets, dim_feedforward, dropout,
                                                 activation, layer_norm_eps, batch_first, norm_first,
                                                 **factory_kwargs)
         encoder_norm = LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
@@ -72,7 +260,7 @@ class Transformer_CVAE(Module):
 
         self.sample_layer = VAEsample(d_model, d_latent, batch_first, **factory_kwargs)
 
-        decoder_layer = TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout,
+        decoder_layer = RelativeDecoderLayer(d_model, nhead, num_buckets, dim_feedforward, dropout,
                                                 activation, layer_norm_eps, batch_first, norm_first,
                                                 **factory_kwargs)
         decoder_norm = LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)

@@ -121,6 +121,7 @@ class TeacherForceTask:
 
     def teach_chord_token(self):
         next_chord_tokens = self.chord_token.pop(0)
+        print(f"Teach token is: {next_chord_tokens}, num of left tokens: {len(self.chord_token)}")
         self.next_tokens_forced.append(next_chord_tokens)
         self.chord_position.pop(0)
         self.inter_chord_flags.pop(0)

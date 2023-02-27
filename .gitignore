@@ -141,3 +141,6 @@ dataset/__MACOSX
 
 # test files
 tmp_train_CPU.py
+
+# work files
+work*

@@ -19,6 +19,7 @@ def model(cfg):
     cfg.MODEL.vocab_size = 729
     cfg.MODEL.meta_length = 11
     cfg.MODEL.same_length = False
+    cfg.MODEL.num_buckets = 128
     return cfg
 
 

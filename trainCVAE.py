@@ -248,35 +248,36 @@ def train():
                     name,
                 )
 
-                test_start_time = time.time()
+                # Test Loop (No need.. because same as val)
+                # test_start_time = time.time()
 
-                def calculate_test_nll_during_training(test_iter):
+                # def calculate_test_nll_during_training(test_iter):
 
-                    test_token_num, test_total_nll = evaluate(
-                        eval_iter=test_iter
-                    )
-                    test_token_num_pt = torch.tensor(test_token_num).to(device)
-                    test_total_nll_pt = torch.tensor(test_total_nll / 10000.0).to(device)
-                    torch.distributed.all_reduce(test_token_num_pt)
-                    torch.distributed.all_reduce(test_total_nll_pt)
+                #     test_token_num, test_total_nll = evaluate(
+                #         eval_iter=test_iter
+                #     )
+                #     test_token_num_pt = torch.tensor(test_token_num).to(device)
+                #     test_total_nll_pt = torch.tensor(test_total_nll / 10000.0).to(device)
+                #     torch.distributed.all_reduce(test_token_num_pt)
+                #     torch.distributed.all_reduce(test_total_nll_pt)
 
-                    test_token_num = test_token_num_pt.item()
-                    test_nll = test_total_nll_pt.item() / (test_token_num / 10000.0)
+                #     test_token_num = test_token_num_pt.item()
+                #     test_nll = test_total_nll_pt.item() / (test_token_num / 10000.0)
 
-                    return test_token_num, test_nll
+                #     return test_token_num, test_nll
 
-                test_token_num, test_nll = calculate_test_nll_during_training(test_iter)
+                # test_token_num, test_nll = calculate_test_nll_during_training(test_iter)
 
-                if args.local_rank == 0:
-                    logger.info(
-                        "Test step {}, time={}s, test nll={}, test ppl={}, #evaluated tokens={}".format(
-                            train_step,
-                            time.time() - test_start_time,
-                            test_nll,
-                            math.exp(test_nll),
-                            test_token_num,
-                        )
-                    )
+                # if args.local_rank == 0:
+                #     logger.info(
+                #         "Test step {}, time={}s, test nll={}, test ppl={}, #evaluated tokens={}".format(
+                #             train_step,
+                #             time.time() - test_start_time,
+                #             test_nll,
+                #             math.exp(test_nll),
+                #             test_token_num,
+                #         )
+                #     )
 
         if train_step == cfg.TRAIN.max_step:
             logger.info("-" * 100)
