@@ -242,7 +242,7 @@ class Transformer_CVAE(Module):
         dim_feedforward = cfg.MODEL.inner_size
         pad_idx = cfg.MODEL.pad_index
         vocab_size = cfg.MODEL.vocab_size
-        seq_len = cfg.TRAIN.tgt_length
+        seq_len = cfg.TRAIN.tgt_length + 11
         cdt_len = cfg.MODEL.meta_length
         dropout = cfg.MODEL.dropout
         activation = F.relu
@@ -250,7 +250,7 @@ class Transformer_CVAE(Module):
         beta = cfg.MODEL.beta
         batch_first = False
         norm_first = False
-        num_buckets = cfg.MODEL.num_buckets
+        num_buckets = cfg.MODEL.num_buckets + 11
 
         encoder_layer = RelativeEncoderLayer(d_model, nhead, num_buckets, dim_feedforward, dropout,
                                                 activation, layer_norm_eps, batch_first, norm_first,
@@ -274,7 +274,6 @@ class Transformer_CVAE(Module):
         self.nhead = nhead
         self.batch_first = batch_first
         self.device = device
-        self.cdt_len = cdt_len
 
         self.local_encoder = Linear(d_model, d_model, **factory_kwargs)
         self.local_decoder = Linear(d_model, vocab_size, **factory_kwargs)
@@ -282,7 +281,7 @@ class Transformer_CVAE(Module):
         self.src_tgt_embed = TransformerEmbedding(d_model, vocab_size, seq_len, batch_first=batch_first, **factory_kwargs)
         self.criterion = VAE_Loss(beta=beta, pad_idx=pad_idx) # beta = 1 from Transformer VAE paper, pad_idx from ComMU dataset
 
-    def forward_(self, src: Tensor, tgt: Tensor, cdt: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,
+    def forward_(self, src: Tensor, tgt: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,
                 memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None, memory_key_padding_mask: Optional[Tensor] = None) -> Tuple[Tensor, Tensor, Tensor]:
         """Take in and process masked source/target sequences.
@@ -342,7 +341,7 @@ class Transformer_CVAE(Module):
             raise RuntimeError("the feature number of src and tgt must be equal to d_model")
 
         encoder_out = self.encoder(src, mask=src_mask, src_key_padding_mask=src_key_padding_mask)
-        latent_sample, latent_mu, latent_logvar = self.sample_layer(encoder_out, cdt)
+        latent_sample, latent_mu, latent_logvar = self.sample_layer(encoder_out)
         output = self.decoder(tgt, latent_sample, tgt_mask=tgt_mask, memory_mask=memory_mask,
                               tgt_key_padding_mask=tgt_key_padding_mask,
                               memory_key_padding_mask=memory_key_padding_mask)
@@ -351,7 +350,7 @@ class Transformer_CVAE(Module):
     # src : word sequence
     # tgt : word sequence that starts with start token
     # cdt : condition sequence
-    def forward(self, src: Tensor, tgt: Tensor, cdt: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,
+    def forward(self, src: Tensor, tgt: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,
                 memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None, memory_key_padding_mask: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
         
@@ -360,21 +359,20 @@ class Transformer_CVAE(Module):
         else:
             seq_len = src.size(0)
         src_tgt_mask = self.generate_square_subsequent_mask(seq_len, device=self.device)
-        cross_attention_mask = self.generate_rectangle_subsequent_mask(seq_len, self.cdt_len, device=self.device)
+        cross_attention_mask = self.generate_square_subsequent_mask(seq_len, device=self.device)
         
         src_embed = self.src_tgt_embed(src)
         tgt_embed = self.src_tgt_embed(tgt)
-        cdt_embed = self.condition_embed(cdt)
 
         src_embed = self.local_encoder(src_embed)
         tgt_embed = self.local_encoder(tgt_embed)
-        out, latent_mu, latent_logvar = self.forward_(src_embed, tgt_embed, cdt_embed, src_tgt_mask, src_tgt_mask, cross_attention_mask, src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask)
+        out, latent_mu, latent_logvar = self.forward_(src_embed, tgt_embed, src_tgt_mask, src_tgt_mask, cross_attention_mask, src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask)
         pred = F.log_softmax(self.local_decoder(out), dim = 2)
         loss, nll = self.criterion(pred, src, latent_mu, latent_logvar)
         return (loss, nll, out)
     
     # tgt : word sequence that starts with start token, filled with padding at the first step of generation
-    def forward_generate(self, input: Tensor, latent: Tensor, cdt: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,
+    def forward_generate(self, input: Tensor, latent: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,
                 memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None, memory_key_padding_mask: Optional[Tensor] = None) -> Tensor:
         
@@ -383,14 +381,12 @@ class Transformer_CVAE(Module):
         else:
             seq_len = input.size(0)
         src_tgt_mask = self.generate_square_subsequent_mask(seq_len, device=self.device)
-        cross_attention_mask = self.generate_rectangle_subsequent_mask(seq_len, self.cdt_len, device=self.device)
+        cross_attention_mask = self.generate_square_subsequent_mask(seq_len, device=self.device)
 
         input_embed = self.src_tgt_embed(input)
-        cdt_embed = self.condition_embed(cdt)
 
         input_embed = self.local_encoder(input_embed)
-        out = torch.concat((cdt_embed, latent), dim = 1 if self.batch_first else 0)
-        out = self.sample_layer.latent2model(out)
+        out = self.sample_layer.latent2model(latent)
         output = self.decoder(input_embed, out, tgt_mask=src_tgt_mask, memory_mask=cross_attention_mask,
                               tgt_key_padding_mask=tgt_key_padding_mask,
                               memory_key_padding_mask=memory_key_padding_mask)
@@ -435,14 +431,13 @@ class VAEsample(Module):
     # input size : 
     # (batch_size, seq_length, d_model) if batch_first is True
     # (seq_length, batch_size, d_model) if batch_first is False
-    def forward(self, x, cdt):
+    def forward(self, x):
         lin_out = self.model2sample(x)
         latent_mean = lin_out[:, :, :self.d_latent]
         latent_logvar = lin_out[:, :, self.d_latent:]
         latent_std = torch.exp(0.5*latent_logvar)
         norm_sample = torch.normal(mean = 0, std = 1, size=latent_mean.size(), device=self.device)
         out = latent_mean + latent_std * norm_sample
-        out = torch.concat((cdt, out), dim = self.seq_pos)
         out = self.latent2model(out)
         return out, latent_mean, latent_logvar
 

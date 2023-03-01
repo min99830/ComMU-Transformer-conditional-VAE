@@ -87,8 +87,8 @@ def evaluate(eval_iter):
     with torch.no_grad():
 
         for i, (data, target, meta, batch_token_num) in enumerate(eval_iter()):
-
-            ret = model(target, data, meta)
+            
+            ret = model(torch.concat((meta, target), dim=0), torch.concat((meta, data), dim=0))
             loss, nll, out = ret
             total_nll += batch_token_num * nll.float().item()
             total_token_num += batch_token_num
@@ -129,7 +129,7 @@ def train():
             target = target_chunks[i].contiguous()
             meta = meta_chunks[i].contiguous()
 
-            loss, nll, out = model(target, data, meta)
+            loss, nll, out = model(torch.concat((meta, target), dim=0), torch.concat((meta, data), dim=0))
 
             # loss = loss[target != dataset.vocab.pad_id] # We already excluded padding in model criterion
             loss = loss.float().mean() / cfg.TRAIN.batch_chunk
@@ -468,7 +468,7 @@ model = DDP(
     device_ids=[args.local_rank],
     output_device=args.local_rank,
     broadcast_buffers=False,
-    find_unused_parameters=False,
+    find_unused_parameters=True,
 )
 
 logger.info("=" * 100)

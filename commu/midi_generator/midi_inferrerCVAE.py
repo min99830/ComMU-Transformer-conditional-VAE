@@ -187,7 +187,7 @@ class InferenceTask:
     def generate_latent_init_seq(self):
         latent_dim = self.inference_cfg.GENERATION.latent_dim
         seq_length = self.inference_cfg.GENERATION.seq_length
-        latent = torch.normal(0, 1, (seq_length, 1, latent_dim)).to(self.device)
+        latent = torch.normal(0, 1, (seq_length + 11, 1, latent_dim)).to(self.device)
         seq = (torch.ones(seq_length, 1).long() * self.inference_cfg.GENERATION.pad_index).to(self.device)
         return latent, seq
 
@@ -205,8 +205,8 @@ class InferenceTask:
         self, seq, seq_tensor: torch.Tensor, latent: torch.Tensor, meta: torch.Tensor
     ) -> torch.Tensor:
         seq_tensor, cur_pos = self.update_seq_tensor(seq, seq_tensor)
-        logits = self.model.forward_generate(seq_tensor, latent, meta)[cur_pos, 0]
-        
+        seq_tensor = torch.concat((meta, seq_tensor), dim=0)
+        logits = self.model.forward_generate(seq_tensor, latent)[cur_pos, 0]
         return logits
 
     def calc_probs(self, logits):
@@ -291,6 +291,7 @@ class InferenceTask:
             # teacher forcing followed by token inference so that we can check if the wrong token was generated
             try:
                 token = self.infer_token(probs)
+                print(token)
             except RuntimeError as e:
                 logger.error(f"Sampling Error: {e}")
                 seq = None
@@ -347,8 +348,8 @@ class InferenceTask:
         while idx != self.input_data.num_generate:
             with torch.no_grad():
                 logger.info("Generating the idx: " + str(idx + 1))
-                latent, seq_tensor = self.generate_latent_init_seq()
                 meta = torch.LongTensor(encoded_meta).view(-1, 1).to(self.device)
+                latent, seq_tensor = self.generate_latent_init_seq()
                 seq = [self.inference_cfg.GENERATION.pad_index] # 0 is pad_idx
                 seq = self.generate_sequence(seq_tensor, latent, meta)
                 seq = [0] + encoded_meta + seq[1:]
