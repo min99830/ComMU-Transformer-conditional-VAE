@@ -21,7 +21,9 @@ def train(cfg):
     cfg.TRAIN.batch_size = 256
     cfg.TRAIN.batch_chunk = 4
     cfg.TRAIN.tgt_length = 128
-    cfg.TRAIN.mem_length = 1024
+    cfg.TRAIN.mem_length = 512
+    cfg.TRAIN.cmem_length = 512
+    cfg.TRAIN.compression_factor = 2
     cfg.TRAIN.seed = 1111
     cfg.TRAIN.lr = 0.004
     cfg.TRAIN.lr_min = 0.0001

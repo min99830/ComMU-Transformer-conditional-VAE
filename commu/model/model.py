@@ -192,6 +192,7 @@ class RelMultiHeadAttn(nn.Module):
             dropatt=0,
             tgt_len=None,
             mem_len=None,
+            cmem_len=None,
             use_qkv=True,
     ):
         super(RelMultiHeadAttn, self).__init__()
@@ -264,7 +265,7 @@ class RelMultiHeadAttn(nn.Module):
 
         return x
 
-    def forward(self, w, r, attn_mask=None, mems=None):
+    def forward(self, w, r, attn_mask=None, mems=None, cmems=None):
         raise NotImplementedError
 
 
@@ -277,11 +278,12 @@ class RelPartialLearnableMultiHeadAttn(RelMultiHeadAttn):
 
         self.r_net = nn.Linear(self.d_model, self.n_head * self.d_head, bias=False)
 
-    def forward(self, w, r, r_w_bias, r_r_bias, attn_mask=None, mems=None):
+    def forward(self, w, r, r_w_bias, r_r_bias, attn_mask=None, mems=None, cmems=None):
         qlen, rlen, bsz = w.size(0), r.size(0), w.size(1)
-
+        
         if mems is not None:
-            cat = torch.cat([mems, w], 0)
+            total_mems = torch.cat([mems, cmems], dim=0)
+            cat = torch.cat([total_mems, w], 0)
             w_heads = self.qkv_net(cat)
             r_head_k = self.r_net(r)
 
@@ -367,9 +369,9 @@ class RelPartialLearnableDecoderLayer(nn.Module):
             d_model, d_inner, dropout
         )
 
-    def forward(self, dec_inp, r, r_w_bias, r_r_bias, dec_attn_mask=None, mems=None):
+    def forward(self, dec_inp, r, r_w_bias, r_r_bias, dec_attn_mask=None, mems=None, cmems=None):
         output = self.dec_attn(
-            dec_inp, r, r_w_bias, r_r_bias, attn_mask=dec_attn_mask, mems=mems
+            dec_inp, r, r_w_bias, r_r_bias, attn_mask=dec_attn_mask, mems=mems, cmems=cmems
         )
 
         output = self.pos_ff(output)
@@ -420,6 +422,17 @@ class AdaptiveEmbedding(nn.Module):
         return embed
 
 
+class ConvCompress(nn.Module):
+    def __init__(self, dim, ratio = 4):
+        super().__init__()
+        self.conv = nn.Conv1d(dim, dim, ratio, stride=ratio)
+        
+    def forward(self, mem):
+        mem = mem.transpose(1, 2)
+        compressed_mem = self.conv(mem)
+        return compressed_mem.transpose(1, 2)
+    
+
 class MemTransformerLM(nn.Module):
     def __init__(
             self,
@@ -436,6 +449,8 @@ class MemTransformerLM(nn.Module):
         d_embed = cfg.MODEL.units
         tgt_len = cfg.TRAIN.tgt_length
         mem_len = cfg.TRAIN.mem_length
+        cmem_len = cfg.TRAIN.cmem_length
+        comp_factor = cfg.TRAIN.compression_factor
         same_length = cfg.MODEL.same_length
         clamp_len = cfg.MODEL.clamp_len
 
@@ -452,6 +467,7 @@ class MemTransformerLM(nn.Module):
             self.n_token, d_embed, d_model)
 
         self.drop = nn.Dropout(dropout)
+        self.compress_func = ConvCompress(d_model, comp_factor)
         self.n_layer = n_layer
 
         self.tgt_len = tgt_len
@@ -470,6 +486,7 @@ class MemTransformerLM(nn.Module):
                     dropout,
                     tgt_len=tgt_len,
                     mem_len=mem_len,
+                    cmem_len=cmem_len,
                     dropatt=dropatt,
                 )
             )
@@ -491,36 +508,45 @@ class MemTransformerLM(nn.Module):
         self.r_w_bias = nn.Parameter(torch.Tensor(self.n_head, self.d_head))
         self.r_r_bias = nn.Parameter(torch.Tensor(self.n_head, self.d_head))
 
-    def reset_length(self, tgt_len, mem_len):
+    def reset_length(self, tgt_len, mem_len, cmem_len):
         self.tgt_len = tgt_len
         self.mem_len = mem_len
+        self.cmem_len = cmem_len
 
     def init_mems(self, n_layers):
         if self.mem_len > 0:
             param = next(self.parameters())
             mems = torch.empty(n_layers + 1, 0, dtype=param.dtype,
                                device=param.device)
-            return mems
+            cmems = torch.empty(n_layers + 1, 0, dtype=param.dtype,
+                                device=param.device)
+            return mems, cmems
         else:
-            return None
+            return None, None
 
-    def _update_mems(self, hids, mems, qlen, mlen, reset_mems=None):
+    def _update_mems(self, hids, mems, cmems, qlen, mlen, cmlen, reset_mems=None):
 
         # The idea is that randomization from shuffling will have be equivalent to memory resetting
 
-        if mems is None:
-            return None
+        if mems is None and cmems is None:
+            return None, None
 
-        assert len(hids) == len(mems)
+        assert len(hids) == len(mems) + len(cmems)
         # mems is not the same as self.mem_len
-
+        
         # There are `mlen + qlen` steps that can be cached into mems
         # For the next step, the last `ext_len` of the `qlen` tokens
         # will be used as the extended context. Hence, we only cache
         # the tokens from `mlen + qlen - self.ext_len - self.mem_len`
         # to `mlen + qlen - self.ext_len`.
+
         with torch.no_grad():
             new_mems = []
+            new_cmems = []
+            
+            old_mems = mems[:self.d_model]
+            new_cmems = self.compress_func(old_mems)
+            
             end_idx = mlen + max(0, qlen)
             beg_idx = max(0, end_idx - self.mem_len)
             stacked = torch.stack(hids)
@@ -534,16 +560,19 @@ class MemTransformerLM(nn.Module):
                 new_mems = cat[:, beg_idx:end_idx].detach()
             else:
                 new_mems = cat[:, beg_idx:end_idx].detach()
+                
+            new_cmems = torch.cat([cmems, new_cmems], dim=1)[:, -cmlen:].detach()
+        
+        return new_mems, new_cmems
 
-        return new_mems
-
-    def _forward(self, dec_inp, reset_mems, mems=None):
+    def _forward(self, dec_inp, reset_mems, mems=None, cmems=None):
 
         qlen, bsz = dec_inp.size()[0], dec_inp.size()[1]
         word_emb = self.word_emb(dec_inp)
 
         mlen = mems[0].size(0) if mems is not None else 0
-        klen = mlen + qlen
+        cmlen = cmems[0].size(0) if cmems is not None else 0
+        klen = mlen + cmlen + qlen
 
         # Generate the mask between query and all the keys
         if self.same_length:
@@ -561,17 +590,17 @@ class MemTransformerLM(nn.Module):
 
         if self.same_length:
             dec_attn_mask = ((
-                                     torch.triu(all_ones, 1 + mlen)
+                                     torch.triu(all_ones, 1 + mlen + cmlen)
                                      + torch.tril(all_ones, -mask_shift_len)
                              ).bool()[
                              :, :
                              ]).repeat(len(indices), 1, 1)  # -1
         else:
             dec_attn_mask = (torch.triu(
-                word_emb.new_ones(qlen, klen), diagonal=1 + mlen
+                word_emb.new_ones(qlen, klen), diagonal=1 + mlen +cmlen
             ).bool()[:, :]).repeat(len(indices), 1, 1)
 
-        dec_attn_mask[indices, :, :mlen] = 1
+        dec_attn_mask[indices, :, :mlen + cmlen] = 1
 
 
         hids = []
@@ -589,6 +618,7 @@ class MemTransformerLM(nn.Module):
 
         for i, layer in enumerate(self.layers):
             mems_i = None if mems is None else mems[i]
+            cmems_i = None if cmems is None else cmems[i]
             core_out = layer(
                 core_out,
                 pos_emb,
@@ -596,22 +626,23 @@ class MemTransformerLM(nn.Module):
                 self.r_r_bias,
                 dec_attn_mask=dec_attn_mask,
                 mems=mems_i,
+                cmems=cmems_i,
             )
             hids.append(core_out)
         core_out = self.drop(core_out)
 
-        new_mems = self._update_mems(hids, mems, mlen, qlen, reset_mems)
-        return core_out, new_mems
+        new_mems, new_cmems = self._update_mems(hids, mems, cmems, mlen, cmlen, qlen, reset_mems)
+        return core_out, new_mems, new_cmems
 
-    def forward_generate(self, data, mems):
+    def forward_generate(self, data, mems, cmems):
 
-        if mems is None:
-            mems = self.init_mems(self.n_layer)
+        if mems is None and cmems is None:
+            mems, cmems = self.init_mems(self.n_layer)
 
         tgt_len = data.size(0)
         batch_size = data.size(1)
 
-        hidden, new_mems = self._forward(data, None, mems=mems)
+        hidden, new_mems, new_cmems = self._forward(data, None, mems=mems, cmems=cmems)
 
         pred_hid = hidden[-tgt_len:]
 
@@ -625,9 +656,9 @@ class MemTransformerLM(nn.Module):
         )
         logits = logits.view(tgt_len, batch_size, -1)
 
-        return (logits, new_mems)
+        return (logits, new_mems, new_cmems)
 
-    def forward_generate_gumbel(self, data, temperature, mems):
+    def forward_generate_gumbel(self, data, temperature, mems, cmems):
 
         from torch.autograd import Variable
 
@@ -652,12 +683,12 @@ class MemTransformerLM(nn.Module):
             y_hard = y_hard.view(*shape)
             return (y_hard - y).detach() + y
 
-        if mems is None:
-            mems = self.init_mems(self.n_layer)
+        if mems is None and cmems is None:
+            mems, cmems = self.init_mems(self.n_layer)
 
         tgt_len = data.size(0)
         batch_size = data.size(1)
-        hidden, new_mems = self._forward(data, None, mems=mems)
+        hidden, new_mems, new_cmems = self._forward(data, None, mems=mems, cmems=cmems)
 
         pred_hid = hidden[-tgt_len:]
 
@@ -673,21 +704,21 @@ class MemTransformerLM(nn.Module):
             logits.view(tgt_len, batch_size, -1), temperature=temperature
         )
 
-        return (logits, new_mems)
+        return (logits, new_mems, new_cmems)
 
-    def forward(self, data, target, reset_mems, mems):
+    def forward(self, data, target, reset_mems, mems, cmems):
         # nn.DataParallel does not allow size(0) tensors to be broadcasted.
         # So, have to initialize size(0) mems inside the model forward.
         # Moreover, have to return new_mems to allow nn.DataParallel to piece
         # them together.
-        if mems is None:
-            mems = self.init_mems(self.n_layer)
+        if mems is None and cmems is None:
+            mems, cmems = self.init_mems(self.n_layer)
 
         tgt_len = target.size(0)
-        hidden, new_mems = self._forward(data, reset_mems, mems=mems)
+        hidden, new_mems, new_cmems = self._forward(data, reset_mems, mems=mems, cmems=cmems)
 
         pred_hid = hidden[-tgt_len:]
         loss = self.crit(pred_hid.view(-1, pred_hid.size(-1)), target.view(-1))
         loss = loss.view(tgt_len, -1)
 
-        return (loss, new_mems)
+        return (loss, new_mems, new_cmems)
