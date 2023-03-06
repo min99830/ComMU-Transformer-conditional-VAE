@@ -89,14 +89,16 @@ def evaluate(eval_iter):
 
     with torch.no_grad():
         mems = None
+        cmems = None
 
         for i, (data, target, all_reset_mem, batch_token_num) in enumerate(eval_iter()):
 
             if all_reset_mem:
                 mems = None
+                cmems = None
 
-            ret = model(data, target, None, mems)
-            loss, mems = ret
+            ret = model(data, target, None, mems, cmems)
+            loss, mems, cmems = ret
             loss = loss[target != dataset.vocab.pad_id]
             loss = loss.mean()
             total_nll += batch_token_num * loss.float().item()
@@ -121,6 +123,7 @@ def train():
     log_start_time = time.time()
 
     mems = [None for _ in range(cfg.TRAIN.batch_chunk)]
+    cmems = [None for _ in range(cfg.TRAIN.batch_chunk)]
 
     assert batch_size % cfg.TRAIN.batch_chunk == 0
     train_real_iter = train_iter()
@@ -142,8 +145,8 @@ def train():
             target = target_chunks[i].contiguous()
             reset_mems = reset_mems_chunks[i].contiguous()
 
-            ret = model(data, target, reset_mems, mems[i])
-            loss, mems[i] = ret
+            ret = model(data, target, reset_mems, mems[i], cmems[i])
+            loss, mems[i], cmems[i] = ret
 
             loss = loss[target != dataset.vocab.pad_id]
             loss = loss.float().mean() / cfg.TRAIN.batch_chunk

@@ -487,6 +487,7 @@ class MemTransformerLM(nn.Module):
                     tgt_len=tgt_len,
                     mem_len=mem_len,
                     cmem_len=cmem_len,
+                    compress_factor=comp_factor,
                     dropatt=dropatt,
                 )
             )
@@ -531,7 +532,7 @@ class MemTransformerLM(nn.Module):
         if mems is None and cmems is None:
             return None, None
 
-        assert len(hids) == len(mems) + len(cmems)
+        assert len(hids) == len(mems)
         # mems is not the same as self.mem_len
         
         # There are `mlen + qlen` steps that can be cached into mems
@@ -544,7 +545,7 @@ class MemTransformerLM(nn.Module):
             new_mems = []
             new_cmems = []
             
-            old_mems = mems[:self.d_model]
+            old_mems = mems[:, :self.d_model]
             new_cmems = self.compress_func(old_mems)
             
             end_idx = mlen + max(0, qlen)
