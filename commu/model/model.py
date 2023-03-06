@@ -193,6 +193,7 @@ class RelMultiHeadAttn(nn.Module):
             tgt_len=None,
             mem_len=None,
             cmem_len=None,
+            comp_factor=4,
             use_qkv=True,
     ):
         super(RelMultiHeadAttn, self).__init__()
@@ -201,6 +202,7 @@ class RelMultiHeadAttn(nn.Module):
         self.d_model = d_model
         self.d_head = d_head
         self.dropout = dropout
+        self.cmem_len = cmem_len
 
         if use_qkv:
             self.qkv_net = nn.Linear(d_model, 3 * n_head * d_head, bias=False)
@@ -213,6 +215,8 @@ class RelMultiHeadAttn(nn.Module):
         self.o_net = nn.Linear(n_head * d_head, d_model, bias=False)
 
         self.layer_norm = nn.LayerNorm(d_model)
+
+        self.compress_memory_func = nn.Conv1d(d_model, d_model, kernel_size=comp_factor, stride=comp_factor)
 
         self.scale = 1 / (d_head ** 0.5)
 
@@ -352,6 +356,11 @@ class RelPartialLearnableMultiHeadAttn(RelMultiHeadAttn):
 
         ##### residual connection + layer normalization
         output = self.layer_norm(w + attn_out)
+
+        # Update compress memory
+        old_mems = mems[:self.d_model]
+        new_cm = self.compress_memory_func(old_mems)
+        cmems = torch.cat([cmems, new_cm], dim=0)[-self.cmem_len:]
 
         return output
 
@@ -543,11 +552,6 @@ class MemTransformerLM(nn.Module):
 
         with torch.no_grad():
             new_mems = []
-            new_cmems = []
-            
-            old_mems = mems[:, :self.d_model]
-            new_cmems = self.compress_func(old_mems)
-            
             end_idx = mlen + max(0, qlen)
             beg_idx = max(0, end_idx - self.mem_len)
             stacked = torch.stack(hids)
@@ -561,10 +565,8 @@ class MemTransformerLM(nn.Module):
                 new_mems = cat[:, beg_idx:end_idx].detach()
             else:
                 new_mems = cat[:, beg_idx:end_idx].detach()
-                
-            new_cmems = torch.cat([cmems, new_cmems], dim=1)[:, -cmlen:].detach()
         
-        return new_mems, new_cmems
+        return new_mems, cmems
 
     def _forward(self, dec_inp, reset_mems, mems=None, cmems=None):
 
